@@ -409,6 +409,33 @@ pkg install -y python git clang make libffi openssl
 pip install --upgrade pip
 pip install -r requirements.txt
 echo "Setup complete! Run: python creative_act_ollama.py"`
+  },
+  {
+    name: "QUICKSTART.md",
+    description: "Termux quickstart guide and instructions",
+    path: "/QUICKSTART.md",
+    content: `# CreativeAct Ollama Mobile - Termux Quickstart Guide
+
+Get CreativeAct Ollama Mobile running on your Android device via Termux in under 5 minutes.
+
+## Step 1: Install Termux
+1. Download and install Termux from F-Droid (recommended).
+2. Open Termux and update package lists:
+   pkg update && pkg upgrade -y
+
+## Step 2: Install Python & Git
+pkg install -y python git clang make libffi openssl
+
+## Step 3: Install Dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+
+## Step 4: Start Ollama
+In a separate Termux session:
+ollama serve
+
+## Step 5: Run the App
+python creative_act_ollama.py`
   }
 ];
 
