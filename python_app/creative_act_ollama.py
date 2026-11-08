@@ -2,7 +2,8 @@
 """
 CreativeAct Ollama Mobile - Main REPL Application
 Interactive mobile terminal interface for communicating with locally hosted Ollama models.
-Optimized for Android Termux.
+Optimized for Android Termux with Rich Markdown rendering, live streaming,
+and robust loading indicators that cleanly terminate on output.
 """
 
 import sys
@@ -45,7 +46,7 @@ def main():
 
             # Regular chat flow
             conversation.add_message("user", user_input)
-            
+
             model = config.get("model")
             options = config.get("parameters")
             system_prompt = config.get("system_prompt")
@@ -53,32 +54,67 @@ def main():
 
             console.print()
             full_response = ""
-            
-            with console.status("[cyan]Thinking...", spinner="dots"):
-                try:
-                    stream = client.chat_stream(
-                        model=model,
-                        messages=messages,
-                        options=options,
-                        system=system_prompt
-                    )
-                    
-                    # Stream chunks
-                    first_chunk = True
-                    for chunk in stream:
-                        if first_chunk:
-                            # Clear status and print header for assistant
-                            console.print("[bold blue]Assistant > [/bold blue]", end="")
-                            first_chunk = False
-                        console.print(chunk, end="")
-                        full_response += chunk
-                    console.print("\n")
-                except Exception as e:
-                    TerminalUI.print_error(str(e))
-                    continue
+
+            # Professional loading feedback during initial model load / think phase
+            status = console.status(f"[cyan]Thinking... ({model})[/cyan]", spinner="dots")
+            status.start()
+
+            stream_started = False
+            try:
+                stream = client.chat_stream(
+                    model=model,
+                    messages=messages,
+                    options=options,
+                    system=system_prompt
+                )
+
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    if not stream_started:
+                        # Cleanly terminate loading indicator BEFORE printing any response
+                        status.stop()
+                        stream_started = True
+                        console.print(f"[bold blue]Assistant ({model}) >[/bold blue]\n", end="")
+
+                    # Stream tokens directly to terminal without buffer lag
+                    console.print(chunk, end="", highlight=False)
+                    sys.stdout.flush()
+                    full_response += chunk
+
+                if not stream_started:
+                    status.stop()
+
+                console.print("\n")
+
+            except Exception as e:
+                # Stop status first so error message is never wiped by transient cleanup
+                if not stream_started:
+                    try:
+                        status.stop()
+                    except Exception:
+                        pass
+                console.print()
+                TerminalUI.print_error(f"Generation error: {e}")
+                continue
+            finally:
+                if not stream_started:
+                    try:
+                        status.stop()
+                    except Exception:
+                        pass
 
             if full_response:
                 conversation.add_message("assistant", full_response)
+
+                # Rich Markdown Rendering:
+                # If the response contains markdown formatting (code blocks, tables, headers, lists, bold),
+                # provide a high-contrast styled Markdown block for mobile readability
+                has_markdown = any(m in full_response for m in ["```", "### ", "## ", "# ", "|---", "- [ ]", " - ", " * ", "**"])
+                if has_markdown:
+                    TerminalUI.print_markdown(full_response, title=f"Assistant ({model})")
+            elif not stream_started:
+                TerminalUI.print_error(f"No response received from model '{model}'. Verify that the model is loaded in Ollama.")
 
         except (KeyboardInterrupt, EOFError):
             console.print("\n")

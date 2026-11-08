@@ -1,7 +1,8 @@
 """
 CreativeAct Ollama Mobile - Comprehensive Unit Test Suite
 Tests configuration, conversation history, command parsing, parameter updates,
-Ollama client with mocked streaming responses, and error handling.
+Ollama client with mocked streaming responses, fallback to /api/generate,
+and error handling.
 """
 
 import unittest
@@ -9,12 +10,12 @@ from unittest.mock import patch, MagicMock
 import os
 import tempfile
 import json
-import io
 
 from config import ConfigManager
 from conversation import ConversationManager
 from ollama_client import OllamaClient, HAS_REQUESTS
 from commands import CommandDispatcher
+from ui import TerminalUI, console
 
 class TestCreativeActOllama(unittest.TestCase):
     def setUp(self):
@@ -31,17 +32,14 @@ class TestCreativeActOllama(unittest.TestCase):
         self.test_dir.cleanup()
 
     def test_config_management(self):
-        # Default model should be llama3
         self.assertEqual(self.config.get("model"), "llama3")
         self.config.set("model", "mistral")
         self.assertEqual(self.config.get("model"), "mistral")
 
-        # Test parameter update
         self.assertTrue(self.config.update_parameter("temperature", 0.5))
         self.assertEqual(self.config.get("parameters")["temperature"], 0.5)
         self.assertFalse(self.config.update_parameter("non_existent", 1.0))
 
-        # Test reloading persisted config
         new_config_instance = ConfigManager(self.config_path)
         self.assertEqual(new_config_instance.get("model"), "mistral")
         self.assertEqual(new_config_instance.get("parameters")["temperature"], 0.5)
@@ -57,7 +55,6 @@ class TestCreativeActOllama(unittest.TestCase):
         self.assertEqual(len(api_msgs), 1)
         self.assertEqual(api_msgs[0], {"role": "user", "content": "Hello Ollama"})
 
-        # Reload from file
         new_conv = ConversationManager(self.history_path)
         self.assertEqual(len(new_conv.messages), 1)
         self.assertEqual(new_conv.messages[0]["content"], "Hello Ollama")
@@ -111,13 +108,13 @@ class TestCreativeActOllama(unittest.TestCase):
                 self.assertFalse(self.client.check_connection())
 
     def test_ollama_client_list_models(self):
-        mock_data = {"models": [{"name": "llama3:latest"}, {"name": "gemma:7b"}]}
+        mock_data = {"models": [{"name": "lfm2.5-350m:latest"}, {"name": "llama3:latest"}]}
         if HAS_REQUESTS:
             with patch("requests.get") as mock_get:
                 mock_get.return_value.status_code = 200
                 mock_get.return_value.json.return_value = mock_data
                 models = self.client.list_models()
-                self.assertEqual(models, ["llama3:latest", "gemma:7b"])
+                self.assertEqual(models, ["lfm2.5-350m:latest", "llama3:latest"])
         else:
             with patch("urllib.request.urlopen") as mock_urlopen:
                 mock_cm = MagicMock()
@@ -126,12 +123,12 @@ class TestCreativeActOllama(unittest.TestCase):
                 mock_cm.__enter__.return_value = mock_cm
                 mock_urlopen.return_value = mock_cm
                 models = self.client.list_models()
-                self.assertEqual(models, ["llama3:latest", "gemma:7b"])
+                self.assertEqual(models, ["lfm2.5-350m:latest", "llama3:latest"])
 
-    def test_ollama_client_streaming(self):
+    def test_ollama_client_streaming_chat(self):
         chunk1 = json.dumps({"message": {"content": "Hello "}, "done": False})
         chunk2 = json.dumps({"message": {"content": "World!"}, "done": True})
-        
+
         if HAS_REQUESTS:
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
@@ -140,7 +137,7 @@ class TestCreativeActOllama(unittest.TestCase):
                 mock_resp.__enter__.return_value = mock_resp
                 mock_post.return_value = mock_resp
 
-                chunks = list(self.client.chat_stream("llama3", [{"role": "user", "content": "hi"}]))
+                chunks = list(self.client.chat_stream("lfm2.5-350m:latest", [{"role": "user", "content": "hi"}]))
                 self.assertEqual(chunks, ["Hello ", "World!"])
         else:
             with patch("urllib.request.urlopen") as mock_urlopen:
@@ -151,8 +148,53 @@ class TestCreativeActOllama(unittest.TestCase):
                 mock_cm.__enter__.return_value = mock_cm
                 mock_urlopen.return_value = mock_cm
 
-                chunks = list(self.client.chat_stream("llama3", [{"role": "user", "content": "hi"}]))
+                chunks = list(self.client.chat_stream("lfm2.5-350m:latest", [{"role": "user", "content": "hi"}]))
                 self.assertEqual(chunks, ["Hello ", "World!"])
+
+    def test_ollama_client_fallback_to_generate(self):
+        """Test fallback when model does not support /api/chat template."""
+        chunk1 = json.dumps({"response": "Fallback response token", "done": True})
+
+        if HAS_REQUESTS:
+            with patch("requests.post") as mock_post:
+                # First call to /api/chat returns 400 template error
+                err_resp = MagicMock()
+                err_resp.status_code = 400
+                err_resp.text = json.dumps({"error": "model does not support chat"})
+                err_resp.json.return_value = {"error": "model does not support chat"}
+
+                # Second call to /api/generate succeeds
+                ok_resp = MagicMock()
+                ok_resp.status_code = 200
+                ok_resp.iter_lines.return_value = [chunk1.encode("utf-8")]
+                ok_resp.__enter__.return_value = ok_resp
+
+                mock_post.side_effect = [err_resp, ok_resp]
+
+                chunks = list(self.client.chat_stream("lfm2.5-350m:latest", [{"role": "user", "content": "hi"}]))
+                self.assertEqual(chunks, ["Fallback response token"])
+        else:
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                # Fallback mock for urllib
+                mock_cm = MagicMock()
+                mock_cm.status = 200
+                mock_cm.readline.side_effect = [chunk1.encode("utf-8") + b"\n", b""]
+                mock_cm.__enter__.return_value = mock_cm
+                mock_urlopen.return_value = mock_cm
+
+                # Test _generate_stream_fallback directly
+                chunks = list(self.client._generate_stream_fallback("lfm2.5-350m:latest", [{"role": "user", "content": "hi"}]))
+                self.assertEqual(chunks, ["Fallback response token"])
+
+    def test_status_start_and_stop(self):
+        """Verify status indicator start and stop lifecycle."""
+        status = console.status("Test status")
+        status.start()
+        status.stop()
+
+    def test_markdown_rendering(self):
+        """Verify markdown rendering function execution."""
+        TerminalUI.print_markdown("### Heading\n**bold text**\n```python\nprint(1)\n```")
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,14 +19,27 @@ try:
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
+
     class FallbackStatus:
         def __init__(self, message: str, **kwargs):
             self.message = message
+            self._running = False
+
         def __enter__(self):
-            print(f"⏳ {self.message}")
+            self.start()
             return self
+
         def __exit__(self, exc_type, exc_val, exc_tb):
-            pass
+            self.stop()
+
+        def start(self):
+            if not self._running:
+                clean_msg = re.sub(r"\[/?(bold|dim|cyan|yellow|green|blue|red)\]", "", self.message)
+                print(f"⏳ {clean_msg}")
+                self._running = True
+
+        def stop(self):
+            self._running = False
 
     class FallbackConsole:
         def print(self, *args, **kwargs):
@@ -111,13 +124,13 @@ class TerminalUI:
             print("Use /params <name> <value> to modify a parameter.\n")
 
     @staticmethod
-    def print_markdown(content: str):
-        """Render markdown content nicely in terminal."""
+    def print_markdown(content: str, title: str = "Assistant"):
+        """Render markdown content with full Rich Markdown styling."""
         if HAS_RICH:
             md = Markdown(content)
-            console.print(Panel(md, border_style="blue", title="Assistant", title_align="left"))
+            console.print(Panel(md, border_style="blue", title=title, title_align="left"))
         else:
-            print("\n--- Assistant ---")
+            print(f"\n--- {title} ---")
             print(content)
             print("-----------------\n")
 

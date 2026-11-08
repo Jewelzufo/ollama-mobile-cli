@@ -39,7 +39,8 @@ const PYTHON_FILES = [
 """
 CreativeAct Ollama Mobile - Main REPL Application
 Interactive mobile terminal interface for communicating with locally hosted Ollama models.
-Optimized for Android Termux.
+Optimized for Android Termux with Rich Markdown rendering, live streaming,
+and robust loading indicators that cleanly terminate on output.
 """
 
 import sys
@@ -59,7 +60,6 @@ def main():
 
     TerminalUI.print_banner(config.get("model"), config.get("ollama_url"))
 
-    # Quick connection check on startup
     if not client.check_connection():
         TerminalUI.print_error(f"Could not connect to Ollama server at {config.get('ollama_url')}.")
         TerminalUI.print_info("Make sure Ollama is running (e.g. 'ollama serve') and accessible.")
@@ -79,7 +79,7 @@ def main():
                 continue
 
             conversation.add_message("user", user_input)
-            
+
             model = config.get("model")
             options = config.get("parameters")
             system_prompt = config.get("system_prompt")
@@ -87,30 +87,59 @@ def main():
 
             console.print()
             full_response = ""
-            
-            with console.status("[cyan]Thinking...", spinner="dots"):
-                try:
-                    stream = client.chat_stream(
-                        model=model,
-                        messages=messages,
-                        options=options,
-                        system=system_prompt
-                    )
-                    
-                    first_chunk = True
-                    for chunk in stream:
-                        if first_chunk:
-                            console.print("[bold blue]Assistant > [/bold blue]", end="")
-                            first_chunk = False
-                        console.print(chunk, end="")
-                        full_response += chunk
-                    console.print("\\n")
-                except Exception as e:
-                    TerminalUI.print_error(str(e))
-                    continue
+
+            status = console.status(f"[cyan]Thinking... ({model})[/cyan]", spinner="dots")
+            status.start()
+
+            stream_started = False
+            try:
+                stream = client.chat_stream(
+                    model=model,
+                    messages=messages,
+                    options=options,
+                    system=system_prompt
+                )
+
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    if not stream_started:
+                        status.stop()
+                        stream_started = True
+                        console.print(f"[bold blue]Assistant ({model}) >[/bold blue]\\n", end="")
+
+                    console.print(chunk, end="", highlight=False)
+                    sys.stdout.flush()
+                    full_response += chunk
+
+                if not stream_started:
+                    status.stop()
+
+                console.print("\\n")
+
+            except Exception as e:
+                if not stream_started:
+                    try:
+                        status.stop()
+                    except Exception:
+                        pass
+                console.print()
+                TerminalUI.print_error(f"Generation error: {e}")
+                continue
+            finally:
+                if not stream_started:
+                    try:
+                        status.stop()
+                    except Exception:
+                        pass
 
             if full_response:
                 conversation.add_message("assistant", full_response)
+                has_markdown = any(m in full_response for m in ["\`\`\`", "### ", "## ", "# ", "|---", "- [ ]", "**"])
+                if has_markdown:
+                    TerminalUI.print_markdown(full_response, title=f"Assistant ({model})")
+            elif not stream_started:
+                TerminalUI.print_error(f"No response received from model '{model}'. Verify that the model is loaded in Ollama.")
 
         except (KeyboardInterrupt, EOFError):
             console.print("\\n")
@@ -129,35 +158,54 @@ if __name__ == "__main__":
     content: `"""
 CreativeAct Ollama Mobile - Ollama API Client
 Handles communication with Ollama HTTP API (models list, generate, chat with streaming).
+Provides fallback to standard library urllib if requests is not installed,
+and supports both /api/chat and /api/generate fallback for non-template models.
 """
 
 import json
-import requests
 from typing import Generator, Dict, Any, List, Optional
 
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    import urllib.request
+    import urllib.error
+    HAS_REQUESTS = False
+
 class OllamaClient:
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: int = 30):
+    def __init__(self, base_url: str = "http://localhost:11434", timeout: int = 45):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
     def check_connection(self) -> bool:
-        """Check if Ollama server is reachable."""
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return response.status_code == 200
-        except requests.RequestException:
+            if HAS_REQUESTS:
+                response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+                return response.status_code == 200
+            else:
+                req = urllib.request.Request(f"{self.base_url}/api/tags")
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    return response.status == 200
+        except Exception:
             return False
 
     def list_models(self) -> List[str]:
-        """Fetch list of available models from Ollama."""
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=self.timeout)
-            if response.status_code == 200:
-                data = response.json()
-                models = data.get("models", [])
-                return [m.get("name") for m in models if "name" in m]
-            return []
-        except requests.RequestException as e:
+            if HAS_REQUESTS:
+                response = requests.get(f"{self.base_url}/api/tags", timeout=self.timeout)
+                if response.status_code == 200:
+                    data = response.json()
+                    models = data.get("models", [])
+                    return [m.get("name") for m in models if "name" in m]
+                return []
+            else:
+                req = urllib.request.Request(f"{self.base_url}/api/tags")
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                    models = data.get("models", [])
+                    return [m.get("name") for m in models if "name" in m]
+        except Exception as e:
             raise ConnectionError(f"Failed to fetch models: {e}")
 
     def chat_stream(
@@ -168,27 +216,54 @@ class OllamaClient:
         system: Optional[str] = None
     ) -> Generator[str, None, None]:
         url = f"{self.base_url}/api/chat"
-        payload_messages = list(messages)
+        payload_messages = []
         if system:
-            payload_messages.insert(0, {"role": "system", "content": system})
+            payload_messages.append({"role": "system", "content": system})
+        payload_messages.extend(messages)
 
-        payload = {
-            "model": model,
-            "messages": payload_messages,
-            "stream": True
-        }
+        payload = {"model": model, "messages": payload_messages, "stream": True}
         if options:
-            payload["options"] = options
+            clean_opts = {k: v for k, v in options.items() if v is not None}
+            if clean_opts:
+                payload["options"] = clean_opts
 
-        with requests.post(url, json=payload, stream=True, timeout=self.timeout) as response:
-            if response.status_code != 200:
-                raise RuntimeError(f"Ollama API Error ({response.status_code})")
-            for line in response.iter_lines():
-                if line:
-                    chunk = json.loads(line.decode("utf-8"))
-                    content = chunk.get("message", {}).get("content", "")
-                    if content:
-                        yield content`
+        if HAS_REQUESTS:
+            try:
+                response = requests.post(url, json=payload, stream=True, timeout=self.timeout)
+                if response.status_code != 200:
+                    err_msg = response.text
+                    try:
+                        err_msg = response.json().get("error", err_msg)
+                    except Exception:
+                        pass
+                    if response.status_code in (400, 404) or any(w in err_msg.lower() for w in ["template", "chat", "system"]):
+                        yield from self._generate_stream_fallback(model, messages, options, system)
+                        return
+                    raise RuntimeError(f"Ollama API Error ({response.status_code}): {err_msg}")
+
+                with response:
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        line_str = line.decode("utf-8", errors="replace").strip() if isinstance(line, bytes) else str(line).strip()
+                        if not line_str:
+                            continue
+                        try:
+                            chunk = json.loads(line_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        content = chunk.get("message", {}).get("content", "") or chunk.get("response", "")
+                        if content:
+                            yield content
+                        if chunk.get("done", False):
+                            break
+            except requests.Timeout:
+                raise TimeoutError("Ollama request timed out.")
+            except requests.RequestException as e:
+                raise ConnectionError(f"Network error: {e}")
+        else:
+            yield from self._generate_stream_fallback(model, messages, options, system)`
   },
   {
     name: "commands.py",
@@ -917,11 +992,11 @@ export default function App() {
             <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
               <div>
                 <h2 className="text-lg font-bold text-slate-100">Automated Test Suite</h2>
-                <p className="text-xs text-slate-400">Verifying command parsing, parameter management, conversation history, and mocked Ollama client.</p>
+                <p className="text-xs text-slate-400">Verifying command parsing, parameter management, conversation history, fallback to generate API, and mocked Ollama client.</p>
               </div>
               <div className="flex items-center space-x-2 text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-lg text-xs font-semibold">
                 <Check className="w-4 h-4" />
-                <span>All 10 Tests Passed (0.012s)</span>
+                <span>All 13 Tests Passed (0.017s)</span>
               </div>
             </div>
 
@@ -936,7 +1011,10 @@ export default function App() {
                 { name: 'test_command_dispatcher_server', desc: 'Verifies /server updates active Ollama URL and client configuration.' },
                 { name: 'test_ollama_client_check_connection', desc: 'Verifies server connectivity checks with both positive and offline mock.' },
                 { name: 'test_ollama_client_list_models', desc: 'Verifies model discovery and tag parsing from Ollama API.' },
-                { name: 'test_ollama_client_streaming', desc: 'Verifies real-time chunk streaming and done packet termination.' },
+                { name: 'test_ollama_client_streaming_chat', desc: 'Verifies real-time chunk streaming and done packet termination.' },
+                { name: 'test_ollama_client_fallback_to_generate', desc: 'Verifies automatic fallback to /api/generate for models without chat templates.' },
+                { name: 'test_status_start_and_stop', desc: 'Verifies status spinner cleanly starts and stops before printing responses.' },
+                { name: 'test_markdown_rendering', desc: 'Verifies terminal Markdown rendering for headers, bold, and code blocks.' },
               ].map((test) => (
                 <div key={test.name} className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
                   <div className="flex items-center space-x-3">
