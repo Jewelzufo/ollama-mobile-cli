@@ -3,7 +3,7 @@ CreativeAct Ollama Mobile - Command Dispatcher
 Handles parsing and execution of slash commands.
 """
 
-from typing import List
+from typing import List, Any
 from ui import TerminalUI, console
 from config import ConfigManager
 from conversation import ConversationManager

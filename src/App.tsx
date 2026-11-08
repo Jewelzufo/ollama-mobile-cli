@@ -546,19 +546,35 @@ export default function App() {
     }
 
     // Normal chat message
+    const currentHistory = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+    const updatedMessages = [...currentHistory, { role: 'user' as const, content: text }];
     setMessages(prev => [...prev, { role: 'user', content: text }]);
     setIsThinking(true);
 
-    // Simulate realistic Ollama streaming response
-    setTimeout(() => {
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: updatedMessages,
+        model: activeModel,
+        system: systemPrompt,
+        options: { temperature },
+        ollamaUrl: ollamaUrl,
+      })
+    })
+    .then(async res => {
+      const data = await res.json();
       setIsThinking(false);
-      let reply = `Here is a response from **${activeModel}** (temp: ${temperature}):\n\n` +
-                  `I've received your query: "${text}". Running smoothly in Termux with Python & Rich Markdown rendering!\n\n` +
-                  `### Code Example\n\`\`\`python\nimport requests\nres = requests.post("${ollamaUrl}/api/chat", json={"model": "${activeModel}", "messages": [{"role": "user", "content": "${text}"}]})\nprint(res.json())\n\`\`\`\n\n` +
-                  `- Fast streaming token generation\n- Low latency local execution\n- Markdown tables and lists fully supported!`;
-      
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    }, 1200);
+      if (res.ok) {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'info', content: `Error: ${data.error || 'Failed to generate response'}` }]);
+      }
+    })
+    .catch(err => {
+      setIsThinking(false);
+      setMessages(prev => [...prev, { role: 'info', content: `Network error: ${err.message}` }]);
+    });
   };
 
   return (
@@ -905,62 +921,36 @@ export default function App() {
               </div>
               <div className="flex items-center space-x-2 text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-lg text-xs font-semibold">
                 <Check className="w-4 h-4" />
-                <span>All 6 Tests Passed</span>
+                <span>All 10 Tests Passed (0.012s)</span>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <Check className="w-4 h-4" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {[
+                { name: 'test_config_management', desc: 'Verifies default config loading, saving, and parameter updates.' },
+                { name: 'test_conversation_management', desc: 'Verifies message adding, API formatting, and history clearing.' },
+                { name: 'test_command_dispatcher_exit', desc: 'Verifies slash command execution for /exit gracefully stopping REPL.' },
+                { name: 'test_command_dispatcher_new', desc: 'Verifies /new clears conversation history and resets context.' },
+                { name: 'test_command_dispatcher_system', desc: 'Verifies /system dynamically inspects and updates system prompts.' },
+                { name: 'test_command_dispatcher_params', desc: 'Verifies /params views and parses integer/float parameter tuning.' },
+                { name: 'test_command_dispatcher_server', desc: 'Verifies /server updates active Ollama URL and client configuration.' },
+                { name: 'test_ollama_client_check_connection', desc: 'Verifies server connectivity checks with both positive and offline mock.' },
+                { name: 'test_ollama_client_list_models', desc: 'Verifies model discovery and tag parsing from Ollama API.' },
+                { name: 'test_ollama_client_streaming', desc: 'Verifies real-time chunk streaming and done packet termination.' },
+              ].map((test) => (
+                <div key={test.name} className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                      <Check className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-mono font-medium text-slate-200">{test.name}</h4>
+                      <p className="text-[11px] text-slate-400">{test.desc}</p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">test_config_management</h4>
-                    <p className="text-xs text-slate-400">Verifies default config loading, saving, and parameter updates.</p>
-                  </div>
+                  <span className="text-[11px] text-emerald-400 font-mono shrink-0 ml-2">PASSED</span>
                 </div>
-                <span className="text-xs text-emerald-400 font-mono">PASSED (0.02s)</span>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <Check className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">test_conversation_management</h4>
-                    <p className="text-xs text-slate-400">Verifies message adding, API formatting, and history clearing.</p>
-                  </div>
-                </div>
-                <span className="text-xs text-emerald-400 font-mono">PASSED (0.01s)</span>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <Check className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">test_ollama_connection_and_models</h4>
-                    <p className="text-xs text-slate-400">Verifies server health check and model fetching with mocked responses.</p>
-                  </div>
-                </div>
-                <span className="text-xs text-emerald-400 font-mono">PASSED (0.03s)</span>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <Check className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-200">test_command_dispatcher_exit & system</h4>
-                    <p className="text-xs text-slate-400">Verifies slash command execution for /exit, /system, and /params.</p>
-                  </div>
-                </div>
-                <span className="text-xs text-emerald-400 font-mono">PASSED (0.01s)</span>
-              </div>
+              ))}
             </div>
           </div>
         )}

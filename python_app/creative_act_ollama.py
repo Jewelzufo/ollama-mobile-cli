@@ -69,7 +69,7 @@ def main():
                         if first_chunk:
                             # Clear status and print header for assistant
                             console.print("[bold blue]Assistant > [/bold blue]", end="")
-                            first_chunk =- 1 # type: ignore
+                            first_chunk = False
                         console.print(chunk, end="")
                         full_response += chunk
                     console.print("\n")

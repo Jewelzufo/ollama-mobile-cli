@@ -1,6 +1,7 @@
 """
-CreativeAct Ollama Mobile - Unit Test Suite
-Tests configuration, conversation history, command parsing, and Ollama client with mocked responses.
+CreativeAct Ollama Mobile - Comprehensive Unit Test Suite
+Tests configuration, conversation history, command parsing, parameter updates,
+Ollama client with mocked streaming responses, and error handling.
 """
 
 import unittest
@@ -8,10 +9,11 @@ from unittest.mock import patch, MagicMock
 import os
 import tempfile
 import json
+import io
 
 from config import ConfigManager
 from conversation import ConversationManager
-from ollama_client import OllamaClient
+from ollama_client import OllamaClient, HAS_REQUESTS
 from commands import CommandDispatcher
 
 class TestCreativeActOllama(unittest.TestCase):
@@ -29,6 +31,7 @@ class TestCreativeActOllama(unittest.TestCase):
         self.test_dir.cleanup()
 
     def test_config_management(self):
+        # Default model should be llama3
         self.assertEqual(self.config.get("model"), "llama3")
         self.config.set("model", "mistral")
         self.assertEqual(self.config.get("model"), "mistral")
@@ -37,6 +40,11 @@ class TestCreativeActOllama(unittest.TestCase):
         self.assertTrue(self.config.update_parameter("temperature", 0.5))
         self.assertEqual(self.config.get("parameters")["temperature"], 0.5)
         self.assertFalse(self.config.update_parameter("non_existent", 1.0))
+
+        # Test reloading persisted config
+        new_config_instance = ConfigManager(self.config_path)
+        self.assertEqual(new_config_instance.get("model"), "mistral")
+        self.assertEqual(new_config_instance.get("parameters")["temperature"], 0.5)
 
     def test_conversation_management(self):
         self.assertEqual(len(self.conversation.messages), 0)
@@ -49,33 +57,102 @@ class TestCreativeActOllama(unittest.TestCase):
         self.assertEqual(len(api_msgs), 1)
         self.assertEqual(api_msgs[0], {"role": "user", "content": "Hello Ollama"})
 
+        # Reload from file
+        new_conv = ConversationManager(self.history_path)
+        self.assertEqual(len(new_conv.messages), 1)
+        self.assertEqual(new_conv.messages[0]["content"], "Hello Ollama")
+
         self.conversation.clear()
         self.assertEqual(len(self.conversation.messages), 0)
-
-    @patch("requests.get")
-    def test_ollama_connection_and_models(self, mock_get):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "models": [{"name": "llama3:latest"}, {"name": "gemma:7b"}]
-        }
-        mock_get.return_value = mock_response
-
-        self.assertTrue(self.client.check_connection())
-        models = self.client.list_models()
-        self.assertEqual(models, ["llama3:latest", "gemma:7b"])
 
     def test_command_dispatcher_exit(self):
         should_exit = self.dispatcher.handle_command("/exit")
         self.assertTrue(should_exit)
 
+    def test_command_dispatcher_new(self):
+        self.conversation.add_message("user", "Initial message")
+        self.assertEqual(len(self.conversation.messages), 1)
+        should_exit = self.dispatcher.handle_command("/new")
+        self.assertFalse(should_exit)
+        self.assertEqual(len(self.conversation.messages), 0)
+
     def test_command_dispatcher_system(self):
-        self.dispatcher.handle_command("/system You are an expert Python coding assistant.")
-        self.assertEqual(self.config.get("system_prompt"), "You are an expert Python coding assistant.")
+        self.dispatcher.handle_command("/system You are an expert Python assistant.")
+        self.assertEqual(self.config.get("system_prompt"), "You are an expert Python assistant.")
 
     def test_command_dispatcher_params(self):
         self.dispatcher.handle_command("/params temperature 0.2")
         self.assertEqual(self.config.get("parameters")["temperature"], 0.2)
+        self.dispatcher.handle_command("/params top_k 50")
+        self.assertEqual(self.config.get("parameters")["top_k"], 50)
+
+    def test_command_dispatcher_server(self):
+        self.dispatcher.handle_command("/server http://192.168.1.100:11434")
+        self.assertEqual(self.config.get("ollama_url"), "http://192.168.1.100:11434")
+        self.assertEqual(self.client.base_url, "http://192.168.1.100:11434")
+
+    def test_ollama_client_check_connection(self):
+        if HAS_REQUESTS:
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.status_code = 200
+                self.assertTrue(self.client.check_connection())
+
+                mock_get.side_effect = Exception("Connection refused")
+                self.assertFalse(self.client.check_connection())
+        else:
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_cm = MagicMock()
+                mock_cm.status = 200
+                mock_cm.__enter__.return_value = mock_cm
+                mock_urlopen.return_value = mock_cm
+                self.assertTrue(self.client.check_connection())
+
+                mock_urlopen.side_effect = Exception("Connection refused")
+                self.assertFalse(self.client.check_connection())
+
+    def test_ollama_client_list_models(self):
+        mock_data = {"models": [{"name": "llama3:latest"}, {"name": "gemma:7b"}]}
+        if HAS_REQUESTS:
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.status_code = 200
+                mock_get.return_value.json.return_value = mock_data
+                models = self.client.list_models()
+                self.assertEqual(models, ["llama3:latest", "gemma:7b"])
+        else:
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_cm = MagicMock()
+                mock_cm.status = 200
+                mock_cm.read.return_value = json.dumps(mock_data).encode("utf-8")
+                mock_cm.__enter__.return_value = mock_cm
+                mock_urlopen.return_value = mock_cm
+                models = self.client.list_models()
+                self.assertEqual(models, ["llama3:latest", "gemma:7b"])
+
+    def test_ollama_client_streaming(self):
+        chunk1 = json.dumps({"message": {"content": "Hello "}, "done": False})
+        chunk2 = json.dumps({"message": {"content": "World!"}, "done": True})
+        
+        if HAS_REQUESTS:
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.iter_lines.return_value = [chunk1.encode("utf-8"), chunk2.encode("utf-8")]
+                mock_resp.__enter__.return_value = mock_resp
+                mock_post.return_value = mock_resp
+
+                chunks = list(self.client.chat_stream("llama3", [{"role": "user", "content": "hi"}]))
+                self.assertEqual(chunks, ["Hello ", "World!"])
+        else:
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_cm = MagicMock()
+                mock_cm.status = 200
+                lines = [chunk1.encode("utf-8") + b"\n", chunk2.encode("utf-8") + b"\n", b""]
+                mock_cm.readline.side_effect = lines
+                mock_cm.__enter__.return_value = mock_cm
+                mock_urlopen.return_value = mock_cm
+
+                chunks = list(self.client.chat_stream("llama3", [{"role": "user", "content": "hi"}]))
+                self.assertEqual(chunks, ["Hello ", "World!"])
 
 if __name__ == "__main__":
     unittest.main()
