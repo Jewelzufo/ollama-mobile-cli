@@ -1,0 +1,6 @@
+{
+  "name": "CreativeAct Ollama Mobile",
+  "description": "Interactive mobile terminal REPL for Ollama models in Android Termux, with Python source code, tests, and web TUI preview.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

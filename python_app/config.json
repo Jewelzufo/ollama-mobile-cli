@@ -1,0 +1,18 @@
+{
+  "ollama_url": "http://localhost:11434",
+  "model": "llama3",
+  "system_prompt": "You are a helpful, precise AI assistant optimized for mobile terminals.",
+  "parameters": {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "num_ctx": 2048,
+    "repeat_penalty": 1.1,
+    "seed": 42
+  },
+  "display": {
+    "syntax_theme": "monokai",
+    "show_line_numbers": false,
+    "markdown_width": 76
+  }
+}
